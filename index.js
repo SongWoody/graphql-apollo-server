@@ -1,168 +1,51 @@
-// const express = require('express');
-// const app = express();
-const { ApolloServer } = require('apollo-server');
-const { GraphQLScalarType } = require('graphql');
-
-const typeDefs = `
-    scalar DateTime
-
-    type Query {
-        totalPhotos: Int!
-        allPhotos: [Photo!]!
-    }
-
-    type Mutation {
-        postPhoto(input: PostPhotoInput!): Photo!
-    }
-
-    type Photo {
-        id: ID!
-        url: String!
-        name: String!
-        description: String
-        category: PhotoCategory!
-        postedBy: User!
-        taggedUsers: [User!]!
-        created: DateTime!
-    }
-
-    type User {
-        githubLogin: ID!
-        name: String
-        avatar: String
-        postedPhotos: [Photo!]!
-        inPhotos: [Photo!]!
-    }
-
-    enum PhotoCategory {
-        SELFIE
-        PORTRAIT
-        ACTION
-        LANDSCAPE
-        GRAPHIC
-    }
-
-    input PostPhotoInput {
-        name: String!
-        description: String
-        category: PhotoCategory=PORTRAIT
-    }
-
-`
-
-var users = [
-    {
-        githubLogin: 'mHattrup',
-        name: "User One"
-    },
-    {
-        githubLogin: "gPlake",
-        name: "User Two"
-    },
-    {
-        githubLogin: "sSchmidt",
-        name: "User Three"
-    }
-]
-
-var _id = 4;
-var photos = [
-    {
-        id: '1',
-        name: "Photo 1",
-        description: "My first photo",
-        category: "PORTRAIT",
-        githubUser: "gPlake",
-        created: "3-28-1977"
-    },
-    {
-        id: '2',
-        name: "Photo 2",
-        description: "My second photo",
-        category: "LANDSCAPE",
-        githubUser: "sSchmidt",
-        created: new Date( 2019, 8, 14)
-    },
-    {
-        id: '3',
-        name: "Photo 3",
-        description: "My third photo",
-        category: "SELFIE",
-        githubUser: "sSchmidt",
-        created: new Date( 2019, 9, 14)
-    }   
-]
-
-var tags = [
-    { photoID: "1", userID: "gPlake" },
-    { photoID: "2", userID: "sSchmidt" },
-    { photoID: "2", userID: "mHattrup" },
-    { photoID: "2", userID: "gPlake" },
-    { photoID: "3", userID: "mHattrup" }
-]
+const expressPlayground = require('graphql-playground-middleware-express').default;
+const { ApolloServer } = require('apollo-server-express');
+const express = require('express');
+const { readFileSync } = require('fs');
+const { MongoClient } = require('mongodb');
+require('dotenv').config();
 
 
-const resolvers = {
-    Query: {
-        totalPhotos: () => photos.length,
-        allPhotos: () => photos
-    },
+// async 함수를 만들어 전체 로직을 감쌉니다.
+async function startServer() {
+    const typeDefs = readFileSync('./typeDefs.graphql', 'UTF-8');
+    const resolvers = require('./resolvers');
 
-    Mutation: {
-        postPhoto: (parent, args) => {
-            console.log("postPhoto called with args:", args);
-            var newPhoto = {
-                id: _id++,
-                ...args.input,
-                created: new Date(),
-            }
-            photos.push(newPhoto);
-            return newPhoto;
-        }
-    },
+    const app = express();
+    const MONDGO_DB = process.env.DB_HOST;
+    
+    const client = await MongoClient.connect(MONDGO_DB);
+    const db = client.db();
+    const server = new ApolloServer({ 
+        typeDefs, 
+        resolvers, 
+        context: async ({req}) => {
+            // console.log("set context");
+            const githubToken = req.headers.authorization;
+            const currentUser = await db.collection('users').findOne({ githubToken });
+            return { db, currentUser }
+        } 
+    });
 
-    Photo: {
-        url: (parent) => `http://photos.com/img/${parent.id}.jpg`,
-        postedBy: (parent) => {
-            return users.find(u => u.githubLogin === parent.githubUser)
-        },
-        taggedUsers: (parent) => {
-            return tags
-                .filter(tag => tag.photoID === parent.id)
-                .map(tag => tag.userID)
-                .map(userID => users.find(u => u.githubLogin === userID))
-        }
-    },
+    // 1. 반드시 applyMiddleware 전에 서버를 시작해야 합니다.
+    await server.start();
 
-    User: {
-        postedPhotos: (parent) => {
-            return photos.filter(p => p.githubUser === parent.githubLogin)
-        },
-        inPhotos: (parent) => {
-            return tags
-                .filter(tag => tag.userID === parent.githubLogin)
-                .map(tag => tag.photoID)
-                .map(photoID => photos.find(p => p.id === photoID))
-        }
-    },
+    // 2. 그 후에 Express 앱에 미들웨어를 연결합니다.
+    server.applyMiddleware({ app });
 
-    DateTime: new GraphQLScalarType({
-        name: 'DateTime',
-        description: 'A valid date time value.',
-        parseValue(value) {
-            return new Date(value); // value from the client
-        },
-        serialize(value) {
-            return new Date(value).toISOString(); // value sent to the client
-        },
-        parseLiteral(ast) {
-            return ast.value; // ast value is always in string format
-        }
-    })
+    // 3. Express 라우팅 설정
+    app.get('/', (req, res) => {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.end('PhotoShare API에 오신 것을 환영합니다.');
+    });
+
+    app.get('/playground', expressPlayground({ endpoint: '/graphql' }));
+
+    // 4. 서버 리스닝
+    app.listen({ port: 4000 }, () => {
+        console.log(`🚀 Server ready at http://localhost:4000${server.graphqlPath}`);
+    });
 }
 
-const server = new ApolloServer({ typeDefs, resolvers });
-
-server
-    .listen()
-    .then(({ url }) => { console.log(`🚀  Server ready at ${url}`); });
+// 서버 시작 함수 호출
+startServer();
